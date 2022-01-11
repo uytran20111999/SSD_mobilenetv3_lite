@@ -12,7 +12,7 @@ class baseModel(nn.Module):
         pass
 
 
-def simple_conv(inp, oup, kh, kw, padding=0, stride=1, groups=1, activation=nn.ReLU6, isBN=True, bias=False):
+def simple_conv(inp, oup, kh, kw, padding=0, stride=1, groups=1, activation=nn.ReLU, isBN=True, bias=False):
     modu = [nn.Conv2d(inp, oup, (kh, kw), stride, bias=bias,
                       groups=groups, padding=padding),
             ]
@@ -28,11 +28,11 @@ class SELayer(baseModel):
         super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.se = nn.Sequential(nn.Conv2d(in_channels, squeeze_channels, 1),
-                                nn.BatchNorm2d(squeeze_channels),
+                                # nn.BatchNorm2d(squeeze_channels),
                                 nn.ReLU(inplace=True),
                                 nn.Conv2d(squeeze_channels,
                                           in_channels, 1),
-                                nn.BatchNorm2d(in_channels),
+                                # nn.BatchNorm2d(in_channels),
                                 nn.Hardsigmoid(inplace=True))
 
     def forward(self, x):
