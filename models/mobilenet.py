@@ -17,7 +17,7 @@ def simple_conv(inp, oup, kh, kw, padding=0, stride=1, groups=1, activation=nn.R
                       groups=groups, padding=padding),
             ]
     if isBN:
-        modu.append(nn.BatchNorm2d(oup))
+        modu.append(nn.BatchNorm2d(oup, eps=0.001, momentum=0.01))
     if activation is not None:
         modu.append(activation(inplace=True))
     return nn.Sequential(*modu)
@@ -73,12 +73,12 @@ class bottleNect(baseModel):
         # dw convo
         self.conv2 = simple_conv(expand_size, expand_size, kh, kw, padding=(kh//2, kw//2),
                                  groups=expand_size, activation=self.act, stride=stride)
-        self.conv3 = simple_conv(expand_size, out_c, 1, 1, padding=0,
-                                 groups=1)
         self.SE = None
         if isSE:
             squeeze_channels = make_divisible(expand_size // 4, 8)
             self.SE = SELayer(expand_size, squeeze_channels)
+        self.conv3 = simple_conv(expand_size, out_c, 1, 1, padding=0,
+                                 groups=1, activation=None)
 
         self.shortcut = in_c == out_c and stride == 1
 
@@ -93,39 +93,68 @@ class bottleNect(baseModel):
         return result + x if self.shortcut else result
 
 
+def convert_from_torch_implement(state_dict_custom, torch_state_dict):
+    # the code work for this specific case since the blocks' order is the same as torch's implementation.
+    # work either for torch's mobilenetv3 small state dict or self state dict
+    l1 = list(state_dict_custom.keys())
+    l2 = list(torch_state_dict.keys())
+    for i, j in zip(l1, l2):
+        state_dict_custom[i] = torch_state_dict[j]
+    return state_dict_custom
+
+
 class mobilenetV3_Lite(baseModel):
-    def __init__(self):
+    def __init__(self, pretrain_state_dict=None):
         super().__init__()
-        self.conv1 = simple_conv(
+        self.pretrain_state_dict = pretrain_state_dict
+        self.conv0 = simple_conv(
             3, 16, 3, 3, stride=2, activation=nn.Hardswish, padding=1)
-        self.bnect1 = bottleNect(
+        self.bnect0 = bottleNect(
             16, 16, 16, 3, 3, stride=2, isSE=True, act="RE")
-        self.bnect2 = bottleNect(
+        self.bnect1 = bottleNect(
             16, 72, 24, 3, 3, stride=2, isSE=False, act="RE")
-        self.bnect3 = bottleNect(
+        self.bnect2 = bottleNect(
             24, 88, 24, 3, 3, stride=1, isSE=False, act="RE")
-        self.bnect4 = bottleNect(
+        self.bnect3 = bottleNect(
             24, 96, 40, 5, 5, stride=2, isSE=True, act="HS")
+        self.bnect4 = bottleNect(
+            40, 240, 40, 5, 5, stride=1, isSE=True, act="HS")
         self.bnect5 = bottleNect(
             40, 240, 40, 5, 5, stride=1, isSE=True, act="HS")
         self.bnect6 = bottleNect(
-            40, 240, 40, 5, 5, stride=1, isSE=True, act="HS")
-        self.bnect7 = bottleNect(
             40, 120, 48, 5, 5, stride=1, isSE=True, act="HS")
-        self.bnect8 = bottleNect(
+        self.bnect7 = bottleNect(
             48, 144, 48, 5, 5, stride=1, isSE=True, act="HS")
-        self.bnect9 = bottleNect(
+        self.bnect8 = bottleNect(
             48, 288, 96, 5, 5, stride=2, isSE=True, act="HS")
+        self.bnect9 = bottleNect(
+            96, 576, 96, 5, 5, stride=1, isSE=True, act="HS")
         self.bnect10 = bottleNect(
             96, 576, 96, 5, 5, stride=1, isSE=True, act="HS")
-        self.bnect11 = bottleNect(
-            96, 576, 96, 5, 5, stride=1, isSE=True, act="HS")
-        self.conv2 = simple_conv(96, 576, 1, 1, activation=nn.Hardswish)
-        self.pool = nn.AvgPool2d(7, 1)
-        self.conv3 = simple_conv(576, 1024, 1, 1, isBN=False, bias=True)
+        self.conv1 = simple_conv(96, 576, 1, 1, activation=nn.Hardswish)
+        self.init_weight()
+
+    def init_weight(self):
+        if self.pretrain_state_dict is not None:
+            load_std = convert_from_torch_implement(
+                self.state_dict(), self.pretrain_state_dict)
+            self.load_state_dict(load_std)
+        else:
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d):
+                    nn.init.kaiming_normal_(m.weight, mode="fan_out")
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
+                elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                    nn.init.ones_(m.weight)
+                    nn.init.zeros_(m.bias)
+                elif isinstance(m, nn.Linear):
+                    nn.init.normal_(m.weight, 0, 0.01)
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x):
-        x = self.conv1(x)
+        x = self.conv0(x)
+        x = self.bnect0(x)
         x = self.bnect1(x)
         x = self.bnect2(x)
         x = self.bnect3(x)
@@ -136,18 +165,22 @@ class mobilenetV3_Lite(baseModel):
         x = self.bnect8(x)
         x = self.bnect9(x)
         x = self.bnect10(x)
-        x = self.bnect11(x)
-        x = self.conv2(x)
-        x = self.pool(x)
-        return self.conv3(x)
+        x = self.conv1(x)
+        return x
 
 
 if __name__ == "__main__":
     #a = mobilenet_v3_small(pretrained=True, progress=True)
     #print([i for i in a.state_dict().keys()])
     from torchsummary import summary
-    a = mobilenetV3_Lite().cuda()
-    b = mobilenet_v3_small().cuda()
-    summary(a, (3, 224, 224))
-    print("++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-    summary(b, (3, 224, 224))
+
+    b = mobilenet_v3_small().features
+    torch_model = b.state_dict()
+    a = mobilenetV3_Lite(pretrain_state_dict=None)
+    # k = 5
+    # a = a.eval()
+    # b = b.eval()
+    # x = torch.rand((2, 3, 224, 224))
+    # y1 = a(x)
+    # y2 = b(x)
+    # print((y1-y2).sum())
