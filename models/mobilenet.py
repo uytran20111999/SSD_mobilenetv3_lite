@@ -107,6 +107,7 @@ class mobilenetV3_Lite(baseModel):
     def __init__(self, pretrain_state_dict=None):
         super().__init__()
         self.pretrain_state_dict = pretrain_state_dict
+        self.layers = nn.ModuleList()
         self.conv0 = simple_conv(
             3, 16, 3, 3, stride=2, activation=nn.Hardswish, padding=1)
         self.bnect0 = bottleNect(
@@ -132,6 +133,10 @@ class mobilenetV3_Lite(baseModel):
         self.bnect10 = bottleNect(
             96, 576, 96, 5, 5, stride=1, isSE=True, act="HS")
         self.conv1 = simple_conv(96, 576, 1, 1, activation=nn.Hardswish)
+        self.last_out_channels = 576
+        self.layers.extend([self.conv0, self.bnect0, self.bnect1, self.bnect2, self.bnect3,
+                            self.bnect4, self.bnect5, self.bnect6, self.bnect7, self.bnect8,
+                            self.bnect9, self.bnect10, self.conv1])
         self.init_weight()
 
     def init_weight(self):
@@ -154,33 +159,41 @@ class mobilenetV3_Lite(baseModel):
 
     def forward(self, x):
         x = self.conv0(x)
-        x = self.bnect0(x)
-        x = self.bnect1(x)
+        x = self.bnect0(x)  # C1
+        x = self.bnect1(x)  # C2
         x = self.bnect2(x)
-        x = self.bnect3(x)
+        x = self.bnect3(x)  # C3
         x = self.bnect4(x)
         x = self.bnect5(x)
         x = self.bnect6(x)
         x = self.bnect7(x)
-        x = self.bnect8(x)
+        x = self.bnect8(x)  # C4
         x = self.bnect9(x)
         x = self.bnect10(x)
-        x = self.conv1(x)
+        x = self.conv1(x)  # C5
         return x
+
+    def freeze_model(self):
+        for module in self:
+            for p in module.parameters():
+                p.requires_grad_(False)
+
+    def unfreeze_model(self):
+        for module in self:
+            for p in module.parameters():
+                p.requires_grad_(True)
 
 
 if __name__ == "__main__":
-    #a = mobilenet_v3_small(pretrained=True, progress=True)
-    #print([i for i in a.state_dict().keys()])
     from torchsummary import summary
-
     b = mobilenet_v3_small().features
     torch_model = b.state_dict()
-    a = mobilenetV3_Lite(pretrain_state_dict=None)
-    # k = 5
-    # a = a.eval()
-    # b = b.eval()
-    # x = torch.rand((2, 3, 224, 224))
-    # y1 = a(x)
-    # y2 = b(x)
-    # print((y1-y2).sum())
+    a = mobilenetV3_Lite(
+        pretrain_state_dict=b.state_dict())
+    k = 5
+    a = a.eval().cuda()
+    b = b.eval().cuda()
+    x = torch.rand((2, 3, 224, 224)).cuda()
+    y1 = a(x)
+    y2 = b(x)
+    print((y1-y2).sum())
