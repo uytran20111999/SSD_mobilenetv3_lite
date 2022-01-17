@@ -1,6 +1,6 @@
 from locale import normalize
 from tokenize import group
-from mobilenet import mobilenetV3_Lite, baseModel, simple_conv
+from models.mobilenet import mobilenetV3_Lite, baseModel, simple_conv
 from torchvision.models import mobilenet_v3_small  # for load pretrain
 import torch.nn as nn
 import torch
@@ -135,10 +135,13 @@ class SSDLite(baseModel):
         if is_pretrain:  # load the trained model from torch implementations
             base_net_state_dict = mobilenet_v3_small().features
             base_net_state_dict = base_net_state_dict.state_dict()
+
         self.mobilenet_small = mobilenetV3_Lite(
             pretrain_state_dict=base_net_state_dict)
         self.feature_extractor = Mobilenetv3SmallExtra(
             self.mobilenet_small, c4_idx, is_BN)
+        if is_pretrain:
+            self.feature_extractor.freeze_base()
         self.head = SSDLiteHead(in_channels, num_bbxs, num_class, is_BN)
 
     def forward(self, x):

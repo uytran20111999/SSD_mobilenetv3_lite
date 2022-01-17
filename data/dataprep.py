@@ -24,9 +24,9 @@ class RandomExpand(object):
             return img, bbxs
         else:
             height, width, _ = img.shape
-            ratio = np.random.uniform(1, 4)
-            left = np.random.randint(0, ratio*width - width)
-            top = np.random.randint(0, ratio*height-height)
+            ratio = np.random.uniform(1, 3)
+            left = np.random.uniform(0, ratio*width - width)
+            top = np.random.uniform(0, ratio*height-height)
             blanc_img = np.zeros(
                 shape=(int(ratio*height), int(ratio*width), 3), dtype=np.uint8)
             blanc_img[:, :, :] = np.mean(img, axis=(0, 1))
@@ -131,13 +131,13 @@ def prep_process_img_train(img, bbxs, labels):
 
     trans = transforms.Compose([transforms.Resize((300, 300)),
                                 transforms.ToTensor(),
-                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                                     std=[0.229, 0.224, 0.225])])
-    #rd_ex = RandomExpand(0)
+                                transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                                                     std=[0.5, 0.5, 0.5])])
+    rd_ex = RandomExpand(0.5)
     rd_crop = RandomCrop(0.5)
     rd_flip = RandomFlip(0.5)
     transed = np.array(transf(img))
-    #expanded_img, bx = rd_ex(transed, bbxs)
+    #transed, bx = rd_ex(transed, bbxs)
     transed, bx, ret_labels = rd_crop(transed, bbxs, labels)
     transed, bx = rd_flip(transed, bx)
 
@@ -147,8 +147,8 @@ def prep_process_img_train(img, bbxs, labels):
 def prep_process_img_test(img):
     trans = transforms.Compose([transforms.Resize((300, 300)),
                                 transforms.ToTensor(),
-                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                                     std=[0.229, 0.224, 0.225])])
+                                transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                                                     std=[0.5, 0.5, 0.5])])
 
     return trans(img)
 
@@ -238,7 +238,8 @@ if __name__ == '__main__':
     df_raw = pd.read_csv(dataset['annotations'])
     df_train, df_valid, df_test = split_dataset(df_raw, 10)
     train_ds = ImageData(df_train, df_raw, dataset['imgs_path'], phase='train')
-    img1, bx, clss, _ = train_ds[1200]
+    test_ds = ImageData(df_test, df_raw, dataset['imgs_path'], phase='train')
+    img1, bx, clss, _ = test_ds[0]
     bx = torchvision.ops.box_convert(bx, 'cxcywh', 'xyxy')*300
     show(img1.permute(1, 2, 0), bbs=bx, texts=[
          train_ds.idx2class[i.item()] for i in clss])

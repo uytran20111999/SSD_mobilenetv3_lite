@@ -85,7 +85,7 @@ def match_one_img(anchor, one_img_bbxs, one_img_label, result_tensor_box, result
     # output: num_anchors x 4: regressor label, num_anchors: class_label
 
 
-def match_batch(anchor, img_bbxs, img_labels, input_format='cxcywh'):
+def match_batch(anchor, img_bbxs, img_labels, input_format='cxcywh', device='cuda:0'):
     assert len(img_bbxs) == len(img_labels)
     batch = len(img_bbxs)
     result_bbxs = torch.zeros((batch, anchor.shape[0], 4))
@@ -93,52 +93,53 @@ def match_batch(anchor, img_bbxs, img_labels, input_format='cxcywh'):
     for i in range(len(img_bbxs)):
         match_one_img(anchor, img_bbxs[i], img_labels[i],
                       result_bbxs, result_labels, i, input_format)
-    ret = {"bbxs": result_bbxs, "clss": result_labels}
+    ret = {"bbxs": result_bbxs.to(device), "clss": result_labels.to(device)}
     return ret
 
 
 if __name__ == "__main__":
-    import pandas as pd
-    from dataprep import ImageData
-    import torchvision
-    import numpy as np
-    import PIL.Image as Image
-    from torch_snippets import *
-    ROOT = '../fastRCNNdata'
-    dataset = {
-        'imgs_path': ROOT+'/images/images',
-        'annotations': ROOT + '/df.csv',
-        'normalize': {'mean': [0.485, 0.456, 0.406], 'std': [0.229, 0.224, 0.225]},
-        'candidate_boxes_path': ROOT + '/images/candidates',
-        'candidate_boxes_class': ROOT + '/images/classes',
-        'candidate_boxes_delta': ROOT + '/images/delta',
-        'num_workers': 8,
-        'IoU_threshold': 0.35,
-        'train_ratio': 0.7,
-        'test_ratio': 0.15,
-        'weight_decay': 0.0005,
-    }
-    a = AnchorBox()
-    default_bxs = a.get_anchor()
-    df_raw = pd.read_csv(dataset['annotations'])
-    test_ds = ImageData(df_raw, df_raw, dataset['imgs_path'], phase='test')
-    img_tensor1, a1, b1, img_path1 = test_ds[12]
-    img_tensor2, a2, b2, img_path2 = test_ds[128]
-    b_im = torch.stack([img_tensor1, img_tensor2])
-    a = [a1, a2]
-    b = [b1, b2]
-    result = match_batch(default_bxs, a, b)
+    pass
+    # import pandas as pd
+    # from dataprep import ImageData
+    # import torchvision
+    # import numpy as np
+    # import PIL.Image as Image
+    # from torch_snippets import *
+    # ROOT = '../fastRCNNdata'
+    # dataset = {
+    #     'imgs_path': ROOT+'/images/images',
+    #     'annotations': ROOT + '/df.csv',
+    #     'normalize': {'mean': [0.485, 0.456, 0.406], 'std': [0.229, 0.224, 0.225]},
+    #     'candidate_boxes_path': ROOT + '/images/candidates',
+    #     'candidate_boxes_class': ROOT + '/images/classes',
+    #     'candidate_boxes_delta': ROOT + '/images/delta',
+    #     'num_workers': 8,
+    #     'IoU_threshold': 0.35,
+    #     'train_ratio': 0.7,
+    #     'test_ratio': 0.15,
+    #     'weight_decay': 0.0005,
+    # }
+    # a = AnchorBox()
+    # default_bxs = a.get_anchor()
+    # df_raw = pd.read_csv(dataset['annotations'])
+    # test_ds = ImageData(df_raw, df_raw, dataset['imgs_path'], phase='test')
+    # img_tensor1, a1, b1, img_path1 = test_ds[12]
+    # img_tensor2, a2, b2, img_path2 = test_ds[128]
+    # b_im = torch.stack([img_tensor1, img_tensor2])
+    # a = [a1, a2]
+    # b = [b1, b2]
+    # result = match_batch(default_bxs, a, b)
 
-    deltas = result['bbxs'].squeeze()[1]
-    label = result['clss'].squeeze()[1]
-    idx = torch.where(label != 0)[0]
-    match_bbxs = decode_coordinate(default_bxs, deltas)
-    match_bbxs = torchvision.ops.box_convert(
-        match_bbxs[idx], in_fmt='cxcywh', out_fmt='xyxy')
-    match_bbxs = match_bbxs
-    label = label[idx]
-    h, w, _ = np.array(Image.open(img_path2)).shape
-    fin = match_bbxs.clamp_(0, 1)*torch.tensor([w, h, w, h])
-    show(Image.open(img_path2), bbs=fin, texts=[
-         test_ds.idx2class[i.item()] for i in label])
-    plt.savefig('test_img/test_match_box.png')
+    # deltas = result['bbxs'].squeeze()[1]
+    # label = result['clss'].squeeze()[1]
+    # idx = torch.where(label != 0)[0]
+    # match_bbxs = decode_coordinate(default_bxs, deltas)
+    # match_bbxs = torchvision.ops.box_convert(
+    #     match_bbxs[idx], in_fmt='cxcywh', out_fmt='xyxy')
+    # match_bbxs = match_bbxs
+    # label = label[idx]
+    # h, w, _ = np.array(Image.open(img_path2)).shape
+    # fin = match_bbxs.clamp_(0, 1)*torch.tensor([w, h, w, h])
+    # show(Image.open(img_path2), bbs=fin, texts=[
+    #      test_ds.idx2class[i.item()] for i in label])
+    # plt.savefig('test_img/test_match_box.png')
