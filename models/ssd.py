@@ -4,15 +4,16 @@ from models.mobilenet import mobilenetV3_Lite, baseModel, simple_conv
 from torchvision.models import mobilenet_v3_small  # for load pretrain
 import torch.nn as nn
 import torch
+import functools
 
 
 def extra_block(in_channels, out_channels, is_BN):
     activation = nn.ReLU6
     inter_channels = out_channels//2
-    extras = nn.Sequential(simple_conv(in_channels, inter_channels, 1, 1, activation=activation, isBN=is_BN),
+    extras = nn.Sequential(simple_conv(in_channels, inter_channels, 1, 1, activation=activation, isBN=is_BN,bias=not is_BN),
                            simple_conv(inter_channels, inter_channels, 3, 3,
-                                       activation=activation, groups=inter_channels, stride=2, padding=1, isBN=is_BN),
-                           simple_conv(inter_channels, out_channels, 1, 1, activation=activation, isBN=is_BN),)
+                                       activation=activation, groups=inter_channels, stride=2, padding=1, isBN=is_BN,bias=not is_BN),
+                           simple_conv(inter_channels, out_channels, 1, 1, activation=activation, isBN=is_BN,bias=not is_BN),)
     return extras
 
 
@@ -23,13 +24,18 @@ def normal_init(conv: nn.Module):
             if layer.bias is not None:
                 torch.nn.init.constant_(layer.bias, 0.0)
 
+def xavier_init_(m: nn.Module):
+    if isinstance(m, nn.Conv2d):
+        nn.init.xavier_uniform_(m.weight)
 
 def prediction_block(in_channels, out_channels, kernel_size, is_BN):
     activation = nn.ReLU6
     padding = (kernel_size - 1) // 2
     return nn.Sequential(simple_conv(in_channels, in_channels, kernel_size,
-                         kernel_size, groups=in_channels, isBN=is_BN, padding=padding, activation=activation),
-                         simple_conv(in_channels, out_channels, 1, 1, isBN=False, activation=None))
+                         kernel_size, groups=in_channels, isBN=is_BN,bias=not is_BN, padding=padding, activation=activation),
+                         simple_conv(in_channels, in_channels, kernel_size,
+                         kernel_size, groups=in_channels, isBN=is_BN,bias=not is_BN, padding=padding, activation=activation),
+                         simple_conv(in_channels, out_channels, 1, 1, isBN=False, activation=None,bias=True))
 
 
 class SSDLiteClassificationHead(baseModel):
@@ -48,9 +54,8 @@ class SSDLiteClassificationHead(baseModel):
         for x, block in zip(xs, self.class_heads):
             temp = block(x)
             # B x num_classes x H x W
-            ret.append(
-                temp.view(temp.shape[0], self.num_classes, -1).contiguous().permute(0, 2, 1))
-        return torch.cat(ret, dim=1)  # B x num_anchors x num_classes
+            ret.append(temp.permute(0, 2, 3, 1).contiguous())
+        return torch.cat([o.view(o.size(0), -1) for o in ret], 1) # B x num_anchors x num_classes
 
 
 class SSDLiteRegressorHead(baseModel):
@@ -67,9 +72,8 @@ class SSDLiteRegressorHead(baseModel):
         ret = []
         for x, block in zip(xs, self.reg_heads):
             temp = block(x)
-            ret.append(temp.view(
-                temp.shape[0], 4, -1).contiguous().permute(0, 2, 1))  # B x 4 x (H x W x num_anchors_per_cell)
-        return torch.cat(ret, dim=1)  # B x num_anchors x 4
+            ret.append(temp.permute(0, 2, 3, 1).contiguous())  # B x 4 x (H x W x num_anchors_per_cell)
+        return torch.cat([o.view(o.size(0), -1) for o in ret], 1) # B x num_anchors x 4
 
 
 class SSDLiteHead(baseModel):
@@ -79,11 +83,14 @@ class SSDLiteHead(baseModel):
             in_channels, num_anchors, num_class, is_BN)
         self.regressor_head = SSDLiteRegressorHead(
             in_channels, num_anchors, is_BN)
-        normal_init(self)
+        self.num_classes = num_class
+        xavier_init_(self)
 
     def forward(self, x):
         # x: list of tensors of shape B x C x H x W
-        return {"classification": self.classification_head(x), "regression": self.regressor_head(x)}
+        loc = self.regressor_head(x)
+        conf = self.classification_head(x)
+        return {"classification": conf.view(conf.size(0), -1, self.num_classes), "regression":   loc.view(loc.size(0), -1, 4)}
 
 
 class Mobilenetv3SmallExtra(baseModel):
@@ -103,7 +110,7 @@ class Mobilenetv3SmallExtra(baseModel):
             extra_block(256, 128, is_BN)
         ]
         self.extras = nn.ModuleList(self.extras)
-        normal_init(self.extras)
+        xavier_init_(self.extras)
 
     def forward(self, x):
         # x: BxCxHxW

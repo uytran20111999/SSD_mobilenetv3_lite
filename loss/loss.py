@@ -4,24 +4,56 @@ import math
 import torch.nn.functional as F
 
 
+import torch
+import math
+import torch.nn.functional as F
+from torch.autograd import Variable
+from data.box_utils import log_sum_exp,decode_new,IoG
+import torch.nn as nn
+
+
+
+
 def multibox_loss(preds_labels, preds_bbxs, target_labels,
-                  target_bbxs, bx_loss=torch.nn.SmoothL1Loss(
-        reduction='sum'),
+                  target_bbxs, priors,bx_loss=torch.nn.SmoothL1Loss(
+        reduction='mean'),
         class_loss=torch.nn.CrossEntropyLoss(reduction='none')):
-    pos_mask = torch.where(target_labels != 0, 1, 0).unsqueeze(-1)
-    num_not_neg = torch.sum(pos_mask)
-    if num_not_neg == 0:
-        reg_loss = torch.tensor([0]).cuda()
-        cls_loss = torch.tensor([0]).cuda()
-    else:
-        reg_loss = bx_loss(
-            preds_bbxs*pos_mask, target_bbxs*pos_mask)/num_not_neg
-        cls_loss = class_loss(
-            preds_labels.permute(0, 2, 1), target_labels)  # Bxn_anchorxC -> BxCxn_anchors
-        pos_cls = (pos_mask.squeeze(-1)*cls_loss).sum()
-        neg_cls, _ = ((1-pos_mask.squeeze(-1)) *
-                      cls_loss).sort(descending=True, dim=-1)  # hard negative minings with (num_pos/num_negs)=1/3
-        num_neg = min(3*num_not_neg, len(neg_cls)-num_not_neg)
-        neg_cls = neg_cls[:, :num_neg]
-        cls_loss = (pos_cls + neg_cls.sum())/num_not_neg
-    return reg_loss + cls_loss, reg_loss.detach(), cls_loss.detach()
+        loc_t = Variable(target_bbxs, requires_grad=False)
+        conf_t = Variable(target_labels, requires_grad=False)
+        num = preds_bbxs.size(0)
+        pos = conf_t > 0
+        num_pos = pos.sum(dim=1, keepdim=True)
+
+        # Localization Loss (Smooth L1)
+        # Shape: [batch,num_priors,4]
+        pos_idx = pos.unsqueeze(pos.dim()).expand_as(preds_bbxs)
+        loc_p = preds_bbxs[pos_idx].view(-1, 4)
+        loc_t = loc_t[pos_idx].view(-1, 4)
+        loss_l = F.smooth_l1_loss(loc_p, loc_t, size_average=False)
+
+        # Compute max conf across batch for hard negative mining
+        batch_conf = preds_labels.view(-1, 3)
+        loss_c = log_sum_exp(batch_conf) - batch_conf.gather(1, conf_t.view(-1, 1))
+
+        # Hard Negative Mining
+        loss_c[pos.view(-1)] = 0  # filter out pos boxes for now
+        loss_c = loss_c.view(num, -1)
+        _, loss_idx = loss_c.sort(1, descending=True)
+        _, idx_rank = loss_idx.sort(1)
+        num_pos = pos.long().sum(1, keepdim=True)
+        num_neg = torch.clamp(3*num_pos, max=pos.size(1)-1)
+        neg = idx_rank < num_neg.expand_as(idx_rank)
+
+        # Confidence Loss Including Positive and Negative Examples
+        pos_idx = pos.unsqueeze(2).expand_as(preds_labels)
+        neg_idx = neg.unsqueeze(2).expand_as(preds_labels)
+        conf_p = preds_labels[(pos_idx+neg_idx).gt(0)].view(-1, 3)
+        targets_weighted = conf_t[(pos+neg).gt(0)]
+        loss_c = F.cross_entropy(conf_p, targets_weighted, size_average=False)
+
+        # Sum of losses: L(x,c,l,g) = (Lconf(x, c) + αLloc(x,l,g)) / N
+
+        N = num_pos.data.sum()
+        loss_l /= N
+        loss_c /= N
+        return loss_l+loss_c,loss_l, loss_c

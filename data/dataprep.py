@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 import matplotlib
+import cv2
 matplotlib.use('svg')
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -23,14 +24,14 @@ class RandomExpand(object):
         if prop == 0:
             return img, bbxs
         else:
-            height, width, _ = img.shape
+            _ , height, width = img.shape
             ratio = np.random.uniform(1, 3)
             left = np.random.uniform(0, ratio*width - width)
             top = np.random.uniform(0, ratio*height-height)
             blanc_img = np.zeros(
-                shape=(int(ratio*height), int(ratio*width), 3), dtype=np.uint8)
-            blanc_img[:, :, :] = np.mean(img, axis=(0, 1))
-            blanc_img[int(top):int(top+height), int(left):int(left+width), :] = img
+                shape=(3,int(ratio*height), int(ratio*width)), dtype=np.float32)
+            blanc_img[:, :, :] = np.mean(img, axis=(1, 2),keepdims=True)
+            blanc_img[:,int(top):int(top+height), int(left):int(left+width)] = img
             bx = bbxs.clone()
             bx = bx*torch.tensor([width, height, width, height]) + \
                 torch.tensor([left, top, 0, 0])
@@ -49,7 +50,7 @@ class RandomFlip(object):
         if prop == 0:
             return img, bbxs
         else:
-            img = img[:, ::-1, :]
+            img = img[:, :, ::-1]
             bbxs[:, 0] = 1-bbxs[:, 0]
             return img, bbxs
 
@@ -66,8 +67,8 @@ class RandomCrop(object):
             return img, bbxs, labels
         else:
             success_flag = 0
-            height, width, _ = img.shape
-            min_ious = [0.1, 0.3, 0.7, 0.9]
+            _,height, width = img.shape
+            min_ious = [0.1, 0.3, 0.7, 0.9,-np.inf]
             i = 0
             min_iou = np.random.choice(min_ious)
             while success_flag == 0 and i < self.max_step:
@@ -85,7 +86,7 @@ class RandomCrop(object):
                 bx_tem = torchvision.ops.box_convert(
                     bbxs, 'cxcywh', 'xyxy').clamp(min=0, max=1)
                 IoUmat = torchvision.ops.box_iou(reg_tem, bx_tem)
-                if torch.amax(IoUmat) > min_iou:
+                if torch.amin(IoUmat)>=min_iou:
                     center_x = bbxs[:, 0]
                     center_y = bbxs[:, 1]
                     con_x = (reg_tem[0, 0] <= center_x) & (
@@ -119,37 +120,67 @@ class RandomCrop(object):
                         nw = (rw - lw)/w
                         nh = (bh - th)/h
                         cropped_bbxs = torch.stack([cx, cy, nw, nh], dim=1)
-                        return img[int(top):int(top+h), int(left):int(left+w), :], cropped_bbxs, tem_label
+                        return img[:,int(top):int(top+h), int(left):int(left+w)], cropped_bbxs, tem_label
                 i += 1
             if success_flag == 0:
                 return img, bbxs, labels
 
+def apply_transform_with_prop(img,transform,p):
+    #img: Tensor
+    #transform:f function/ callable class
+    #p: float32 properbility
+    prop = np.random.choice([0, 1], p=[1-p, p])
+    if prop:
+        img = transform(img)
+    return img
+
+
+
+def ligning_noise_trans(img):
+    perms = ((0, 1, 2), (0, 2, 1),
+                    (1, 0, 2), (1, 2, 0),
+                    (2, 0, 1), (2, 1, 0))
+
+    swap = perms[np.random.randint(len(perms))]
+    img = img[swap,:,:]
+    return img
+    
 
 def prep_process_img_train(img, bbxs, labels):
+    base_aug  = transforms.ToTensor()
+    brightness_aug = transforms.ColorJitter(0.125,0,0,0)
+    distort_aug = transforms.ColorJitter(0, 0, (0.5,1.5), 0.05)
+    constrast_aug = transforms.ColorJitter(0,(0.5,1.5),0,0)
+    distort_order = [transforms.Compose([constrast_aug,distort_aug]),transforms.Compose([distort_aug,constrast_aug])][np.random.choice([0, 1], p=[0.5, 0.5])]
+    ligning_noise = ligning_noise_trans
 
-    transf = transforms.Compose([transforms.ColorJitter(0.3, 0.2, 0.1, 0.1)])
+    random_crop = RandomCrop(0.5)
+    random_flip = RandomFlip(0.5)
+    random_expand = RandomExpand(0.5)
+    normalize_aug = transforms.Compose([transforms.Resize((300,300),antialias=True),transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                     std=[0.229, 0.224, 0.225])])
 
-    trans = transforms.Compose([transforms.Resize((300, 300)),
-                                transforms.ToTensor(),
-                                transforms.Normalize(mean=[0.5, 0.5, 0.5],
-                                                     std=[0.5, 0.5, 0.5])])
-    rd_ex = RandomExpand(0.5)
-    rd_crop = RandomCrop(0.5)
-    rd_flip = RandomFlip(0.5)
-    transed = np.array(transf(img))
-    #transed, bx = rd_ex(transed, bbxs)
-    transed, bx, ret_labels = rd_crop(transed, bbxs, labels)
-    transed, bx = rd_flip(transed, bx)
+    #run_augment
+    img = base_aug(img)
+    img = apply_transform_with_prop(img,brightness_aug,0.5)
+    img = apply_transform_with_prop(img,distort_order,0.5)
+    img = apply_transform_with_prop(img,ligning_noise,0.5)
 
-    return trans(Image.fromarray(transed)), bx, ret_labels
+    img = img.numpy()
+
+    img, bx = random_expand(img, bbxs)
+    img, bx, ret_labels = random_crop(img, bx, labels)
+    img, bx = random_flip(img, bx)
+    img = torch.from_numpy(img.copy())
+
+    return normalize_aug(img),bx, ret_labels
 
 
 def prep_process_img_test(img):
-    trans = transforms.Compose([transforms.Resize((300, 300)),
-                                transforms.ToTensor(),
-                                transforms.Normalize(mean=[0.5, 0.5, 0.5],
-                                                     std=[0.5, 0.5, 0.5])])
-
+    trans = transforms.Compose([transforms.ToTensor(),
+                                transforms.Resize((300, 300),antialias=True),
+                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                     std=[0.229, 0.224, 0.225])])
     return trans(img)
 
 
@@ -221,7 +252,7 @@ if __name__ == '__main__':
     pass
     import pandas as pd
     from torch_snippets import *
-    ROOT = '../fastRCNNdata'
+    ROOT = '../my_data'
     dataset = {
         'imgs_path': ROOT+'/images/images',
         'annotations': ROOT + '/df.csv',

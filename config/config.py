@@ -1,4 +1,4 @@
-ROOT = '../fastRCNNdata'
+ROOT = '../my_data'
 dataset_configs = {
     'imgs_path': ROOT+'/images/images',
     'annotations': ROOT + '/df.csv',
